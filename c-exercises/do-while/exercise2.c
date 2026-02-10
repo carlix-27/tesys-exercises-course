@@ -1,0 +1,15 @@
+// Consigna
+// Mostrar los números del 1 al 5 usando do-while.
+
+#include <stdio.h>
+
+int main() {
+    int i = 1;
+
+    do {
+        printf("%d\n", i);
+        i++;
+    } while (i <= 5);
+
+    return 0;
+}

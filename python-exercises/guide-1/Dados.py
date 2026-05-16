@@ -14,8 +14,6 @@ class Dado:
         return self.valorActual
 
 
-# Prueba
-
 dado1 = Dado(6)
 dado2 = Dado(20)
 

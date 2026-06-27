@@ -26,3 +26,5 @@ sistema_tenis/
     ├── test_torneos.py
     └── test_partido.py
 ```
+
+Leete el README.md tambien que tiene a mas detalle las cosas.

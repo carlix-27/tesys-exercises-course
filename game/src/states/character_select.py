@@ -34,7 +34,7 @@ class CharacterSelectState(BaseState):
             self.game.change_state("menu")
 
     def _choose(self, key):
-        self.game.player = data.make_player(key)
+        self.game.player = data.make_player(key, wallet=self.game.wallet)
         self.game.depth = 1
         self.game.log(f"Eliges a tu {data.CLASSES[key]['label']}.")
         self.game.change_state("dungeon")

@@ -2,9 +2,9 @@ import os
 
 import pygame
 
-_ANIM_FPS = {"idle": 3, "attack": 10, "hurt": 6, "death": 4}
+_ANIM_FPS = {"idle": 3, "attack": 10, "hurt": 6, "death": 4, "greet": 6}
 _LOOPING_STATES = {"idle"}
-_AUTO_RETURN_STATES = {"attack", "hurt"}
+_AUTO_RETURN_STATES = {"attack", "hurt", "greet"}
 
 
 class Animator:

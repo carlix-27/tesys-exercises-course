@@ -31,11 +31,12 @@ CLASSES = {
 }
 
 
-def make_player(class_key):
+def make_player(class_key, wallet=None):
     data = CLASSES[class_key]
     weapon = Weapon(*data["weapon"])
     armor = Armor(*data["armor"])
-    player = Player(data["name"], data["label"], data["max_life"], data["speed"], weapon, armor)
+    player = Player(data["name"], data["label"], data["max_life"], data["speed"], weapon, armor,
+                     wallet=wallet)
     player.sprite_key = data.get("sprite")
     return player
 
@@ -141,6 +142,29 @@ def open_chest(player, rare=False):
     return "El cofre solo contenía chatarra sin valor. Consigues 15 de oro."
 
 
+# --- Shop ---------------------------------------------------------------
+SHOP_CATEGORIES = [
+    ("equipamiento", "Equipamiento"),
+    ("puertas", "Puertas"),
+    ("combate", "Combate"),
+]
+
+SHOP_ITEMS = [
+    dict(key="libro", name="Libro Arcano", icon=(0, 0), price=40, category="equipamiento",
+         description="Hechizos que ignoran la armadura. Equipar antes de elegir puerta."),
+    dict(key="llave", name="Llave Dorada", icon=(3, 0), price=35, category="puertas",
+         description="Abre la puerta del tesoro: arma legendaria o armadura al azar."),
+    dict(key="lentes", name="Lentes Reveladores", icon=(2, 1), price=25, category="puertas",
+         description="Revela qué hay detrás de cada puerta antes de elegir."),
+    dict(key="reloj", name="Reloj Detenido", icon=(3, 1), price=30, category="combate",
+         description="Paraliza al enemigo 5s: golpéalo sin recibir contraataque."),
+    dict(key="linterna", name="Linterna Solar", icon=(2, 3), price=60, category="combate",
+         description="Desintegra al enemigo al instante (los jefes solo se queman)."),
+    dict(key="pistola", name="Pistola Vieja", icon=(0, 3), price=100, category="combate",
+         description="Mata a cualquier enemigo, incluso jefes, de un disparo."),
+]
+
+
 DOORS = [
     dict(name="Puerta de Piedra", flavor="Se siente tranquila... quizás demasiado."),
     dict(name="Puerta de Hierro", flavor="Un frío metálico recorre tu espalda."),
@@ -148,37 +172,89 @@ DOORS = [
 ]
 
 
-def resolve_door(door_index, depth, player):
-    """Rolls an encounter for the chosen door.
+def roll_door_outcome(door_index, depth):
+    """Rolls what a door holds WITHOUT touching the player.
 
-    Returns a tuple (kind, payload, message) where kind is one of:
-    'nothing', 'chest', 'enemy', 'elite', 'chalice'.
+    Kept separate from apply_door_outcome so all doors of a room can be
+    rolled up front (letting Lentes preview them) without the two doors the
+    player doesn't pick still granting gold/potions or healing/damaging them.
+    Returns a dict with at least a "kind" key: 'nothing', 'chest', 'enemy',
+    'chalice'.
     """
     roll = random.random()
 
     if door_index == 0:  # Puerta de Piedra: safer
         if roll < 0.45:
-            return "nothing", None, "Avanzas por un pasillo vacío. No encuentras nada."
+            return dict(kind="nothing",
+                        message="Avanzas por un pasillo vacío. No encuentras nada.")
         if roll < 0.75:
-            return "enemy", random_enemy(depth), None
-        return "chest", None, open_chest(player)
+            return dict(kind="enemy", enemy=random_enemy(depth))
+        return dict(kind="chest", rare=False)
 
     if door_index == 1:  # Puerta de Hierro: balanced, more fights
         if roll < 0.55:
-            return "enemy", random_enemy(depth), None
-        return "chest", None, open_chest(player)
+            return dict(kind="enemy", enemy=random_enemy(depth))
+        return dict(kind="chest", rare=False)
 
     # Puerta Maldita: high risk, high reward
     if roll < 0.25:
-        return "enemy", random_elite(depth), None
+        return dict(kind="enemy", enemy=random_elite(depth))
     if roll < 0.45:
-        return "enemy", random_enemy(depth), None
+        return dict(kind="enemy", enemy=random_enemy(depth))
     if roll < 0.70:
-        return "chest", None, open_chest(player, rare=True)
+        return dict(kind="chest", rare=True)
     if roll < 0.85:
-        amount = random.randint(12, 22)
+        return dict(kind="chalice", heal=random.randint(12, 22))
+    return dict(kind="chalice", damage=random.randint(8, 16))
+
+
+def apply_door_outcome(outcome, player):
+    """Applies a previously-rolled outcome to the player.
+
+    Returns a tuple (kind, payload, message), same shape the old
+    resolve_door() returned, so callers don't need to change.
+    """
+    kind = outcome["kind"]
+    if kind == "nothing":
+        return "nothing", None, outcome["message"]
+    if kind == "enemy":
+        return "enemy", outcome["enemy"], None
+    if kind == "chest":
+        return "chest", None, open_chest(player, rare=outcome.get("rare", False))
+    # chalice
+    if "heal" in outcome:
+        amount = outcome["heal"]
         player.heal(amount)
         return "chalice", None, f"Bebes de un cáliz misterioso y recuperas {amount} de vida."
-    amount = random.randint(8, 16)
+    amount = outcome["damage"]
     player.take_damage(amount)
     return "chalice", None, f"El cáliz estaba envenenado. Pierdes {amount} de vida."
+
+
+DOOR_PREVIEW_HINTS = {
+    "nothing": "Presientes un pasillo vacío.",
+    "chest": "Presientes un cofre cercano.",
+    "chalice": "Presientes una energía extraña.",
+}
+
+
+def preview_door_outcome(outcome):
+    """Lentes flavor text for a rolled-but-not-yet-applied outcome."""
+    kind = outcome["kind"]
+    if kind == "enemy":
+        return f"Presientes la presencia de: {outcome['enemy'].classification}."
+    return DOOR_PREVIEW_HINTS.get(kind, "")
+
+
+# --- Llave: treasure door -------------------------------------------------
+LEGENDARY_WEAPON = Weapon("Espada Legendaria", 42)
+LEGENDARY_ARMOR = Armor("Armadura Legendaria", 32)
+
+
+def open_key_door(player):
+    """Spends a llave's worth of luck: random legendary weapon or armor."""
+    if random.random() < 0.5:
+        player.weapon = LEGENDARY_WEAPON
+        return f"¡La puerta del tesoro te entrega la {LEGENDARY_WEAPON.name}! (+{LEGENDARY_WEAPON.damage} daño)"
+    player.armor = LEGENDARY_ARMOR
+    return f"¡La puerta del tesoro te entrega la {LEGENDARY_ARMOR.name}! (+{LEGENDARY_ARMOR.defense} defensa)"

@@ -1,39 +1,71 @@
 import pygame
 
 from .base_state import BaseState
-from .. import config, data
+from .. import config, data, assets
 from ..ui.widgets import Button, draw_text, draw_panel, draw_bar, draw_text_wrapped
 from ..ui.background import draw_dungeon_background
+
+KEY_DOOR = "key"
+DOOR_Y = 260
+DOOR_H = 236
 
 
 class DungeonState(BaseState):
     def enter(self, **kwargs):
         self.boss_incoming = self.game.depth >= config.BOSS_DEPTH
+        self.shop_button = Button((config.SCREEN_WIDTH - 190, 20, 170, 44), "Tienda", size=20,
+                                   base_color=config.DARK_GREEN, hover_color=config.GREEN)
+        self.book_button = Button((config.SCREEN_WIDTH - 190, 72, 170, 40), "Equipar Libro",
+                                   size=15, base_color=config.PANEL, hover_color=config.PANEL_LIGHT)
         self._build_buttons()
-        self.info_message = ""
 
     def _build_buttons(self):
         self.door_buttons = []
+        self.door_outcomes = {}
+        player = self.game.player
+
         if self.boss_incoming:
             rect = pygame.Rect(config.SCREEN_WIDTH // 2 - 160, 300, 320, 140)
             self.door_buttons.append((None, rect, Button(
                 (rect.x + 30, rect.bottom - 60, rect.width - 60, 44),
                 "Enfrentar al Rey Goblin", size=18,
                 base_color=config.DARK_RED, hover_color=config.RED)))
-        else:
-            door_w, gap = 220, 40
-            total = door_w * 3 + gap * 2
-            start_x = (config.SCREEN_WIDTH - total) // 2
-            for i, door in enumerate(data.DOORS):
-                rect = pygame.Rect(start_x + i * (door_w + gap), 260, door_w, 220)
-                btn = Button((rect.x + 20, rect.bottom - 60, rect.width - 40, 44),
-                             "Abrir", size=20)
-                self.door_buttons.append((i, rect, btn))
+            return
+
+        self.has_key_door = player.has_item("llave")
+        count = len(data.DOORS) + (1 if self.has_key_door else 0)
+        door_w, gap = (210, 26) if self.has_key_door else (220, 40)
+        total = door_w * count + gap * (count - 1)
+        start_x = (config.SCREEN_WIDTH - total) // 2
+        name_size = 18 if self.has_key_door else 20
+
+        for i, door in enumerate(data.DOORS):
+            self.door_outcomes[i] = data.roll_door_outcome(i, self.game.depth)
+            rect = pygame.Rect(start_x + i * (door_w + gap), DOOR_Y, door_w, DOOR_H)
+            btn = Button((rect.x + 20, rect.bottom - 44, rect.width - 40, 32),
+                         "Abrir", size=18)
+            self.door_buttons.append((i, rect, btn))
+
+        if self.has_key_door:
+            i = len(data.DOORS)
+            rect = pygame.Rect(start_x + i * (door_w + gap), DOOR_Y, door_w, DOOR_H)
+            btn = Button((rect.x + 20, rect.bottom - 44, rect.width - 40, 32),
+                         "Usar llave", size=16, base_color=config.DARK_GREEN, hover_color=config.GOLD)
+            self.door_buttons.append((KEY_DOOR, rect, btn))
+
+        self._name_size = name_size
 
     def handle_event(self, event):
+        if self.shop_button.handle_event(event):
+            self.game.change_state("shop")
+            return
+        if not self.boss_incoming and self.game.player.has_item("libro"):
+            if self.book_button.handle_event(event):
+                self.game.player.equipped_book = not self.game.player.equipped_book
         for index, rect, button in self.door_buttons:
             if button.handle_event(event):
                 self._choose_door(index)
+                return
 
     def _choose_door(self, index):
         player = self.game.player
@@ -43,16 +75,26 @@ class DungeonState(BaseState):
             self.game.change_state("combat", enemy=enemy)
             return
 
-        kind, payload, message = data.resolve_door(index, self.game.depth, player)
-        if kind in ("enemy",):
+        if index == KEY_DOOR:
+            player.consume_item("llave")
+            self.game.log(data.open_key_door(player))
+            self._advance_room()
+            return
+
+        outcome = self.door_outcomes[index]
+        kind, payload, message = data.apply_door_outcome(outcome, player)
+        if kind == "enemy":
             self.game.log(f"Te encuentras con un {payload.name}.")
             self.game.change_state("combat", enemy=payload)
             return
 
         if message:
             self.game.log(message)
+        self._advance_room()
+
+    def _advance_room(self):
         self.game.depth += 1
-        player.rooms_cleared += 1
+        self.game.player.rooms_cleared += 1
         self.boss_incoming = self.game.depth >= config.BOSS_DEPTH
         self._build_buttons()
 
@@ -67,6 +109,11 @@ class DungeonState(BaseState):
 
         player = self.game.player
         self._draw_hud(surface, player)
+        self.shop_button.draw(surface)
+        if not self.boss_incoming and player.has_item("libro"):
+            self.book_button.text = "Libro equipado ✓" if player.equipped_book else "Equipar Libro"
+            self.book_button.base_color = config.DARK_GREEN if player.equipped_book else config.PANEL
+            self.book_button.draw(surface)
 
         if self.boss_incoming:
             draw_text(surface, "El fondo del pasillo se abre a una sala inmensa...",
@@ -76,15 +123,27 @@ class DungeonState(BaseState):
                       (config.SCREEN_WIDTH // 2, 220), size=26, color=config.GOLD,
                       bold=True, center=True)
 
+        has_lentes = player.has_item("lentes")
         for index, rect, button in self.door_buttons:
             draw_panel(surface, rect, color=config.PANEL)
-            if index is not None:
+            if index == KEY_DOOR:
+                draw_text(surface, "Puerta del Tesoro", (rect.centerx, rect.y + 26),
+                          size=self._name_size, color=config.GOLD, bold=True, center=True)
+                draw_text_wrapped(surface, "Arma legendaria o armadura poderosa, al azar.",
+                                   (rect.x + 14, rect.y + 56, rect.width - 28, 70),
+                                   size=13, color=config.GRAY)
+            elif index is not None:
                 door = data.DOORS[index]
-                draw_text(surface, door["name"], (rect.centerx, rect.y + 30),
-                          size=20, color=config.WHITE, bold=True, center=True)
+                draw_text(surface, door["name"], (rect.centerx, rect.y + 26),
+                          size=self._name_size, color=config.WHITE, bold=True, center=True)
                 draw_text_wrapped(surface, door["flavor"],
-                                   (rect.x + 16, rect.y + 60, rect.width - 32, 100),
-                                   size=14, color=config.GRAY)
+                                   (rect.x + 14, rect.y + 56, rect.width - 28, 70),
+                                   size=13, color=config.GRAY)
+                if has_lentes:
+                    hint = data.preview_door_outcome(self.door_outcomes[index])
+                    draw_text_wrapped(surface, hint,
+                                       (rect.x + 14, rect.y + 135, rect.width - 28, 40),
+                                       size=12, color=config.GOLD)
             else:
                 draw_text(surface, "El Rey Goblin te espera", (rect.centerx, rect.y + 30),
                           size=18, color=config.WHITE, bold=True, center=True)
@@ -99,8 +158,10 @@ class DungeonState(BaseState):
                   size=18, color=config.WHITE, bold=True)
         draw_bar(surface, (36, 60, 300, 22), player.life, player.max_life,
                  config.GREEN, label=f"{player.life}/{player.max_life} HP")
-        draw_text(surface, f"Oro: {player.gold}   Pociones: {player.potions}",
-                  (36, 92), size=16, color=config.GOLD)
+        coin_icon = assets.get_item_icon((1, 1), scale=1.2)
+        surface.blit(coin_icon, (36, 90))
+        draw_text(surface, f"{player.gold}   Pociones: {player.potions}",
+                  (36 + coin_icon.get_width() + 6, 92), size=16, color=config.GOLD)
         draw_text(surface, f"Arma: {player.weapon.name} (+{player.weapon.damage})",
                   (36, 114), size=14, color=config.LIGHT_GRAY)
 

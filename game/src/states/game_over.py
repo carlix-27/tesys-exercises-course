@@ -1,7 +1,7 @@
 import pygame
 
 from .base_state import BaseState
-from .. import config
+from .. import config, assets
 from ..ui.widgets import Button, draw_text, draw_panel
 from ..ui.background import draw_dungeon_background
 
@@ -49,10 +49,15 @@ class GameOverState(BaseState):
             lines = [
                 f"Personaje: {player.name} ({player.class_name})",
                 f"Salas superadas: {player.rooms_cleared}",
-                f"Oro recolectado: {player.gold}",
             ]
             for i, line in enumerate(lines):
                 draw_text(surface, line, (panel_rect[0] + 24, panel_rect[1] + 24 + i * 34),
                           size=18, color=config.WHITE)
+            coin_icon = assets.get_item_icon((1, 1), scale=1.4)
+            coin_y = panel_rect[1] + 24 + len(lines) * 34
+            surface.blit(coin_icon, (panel_rect[0] + 24, coin_y))
+            draw_text(surface, f"Oro en tu billetera: {player.gold}",
+                      (panel_rect[0] + 24 + coin_icon.get_width() + 8, coin_y + 5),
+                      size=18, color=config.WHITE)
 
         self.retry_button.draw(surface)

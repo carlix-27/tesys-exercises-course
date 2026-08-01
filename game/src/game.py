@@ -3,10 +3,12 @@ import sys
 import pygame
 
 from . import config
+from .entities.wallet import Wallet
 from .states.menu import MenuState
 from .states.character_select import CharacterSelectState
 from .states.dungeon import DungeonState
 from .states.combat import CombatState
+from .states.shop import ShopState
 from .states.game_over import GameOverState
 
 
@@ -17,6 +19,10 @@ class Game:
         self.screen = pygame.display.set_mode((config.SCREEN_WIDTH, config.SCREEN_HEIGHT))
         self.clock = pygame.time.Clock()
         self.running = True
+
+        # Persists across runs (survives reset_run and death) -- gold earned
+        # combat after combat is banked here, not on the disposable Player.
+        self.wallet = Wallet.load()
 
         # Session data shared across states.
         self.player = None
@@ -29,6 +35,7 @@ class Game:
             "character_select": CharacterSelectState(self),
             "dungeon": DungeonState(self),
             "combat": CombatState(self),
+            "shop": ShopState(self),
             "game_over": GameOverState(self),
         }
         self.state = None

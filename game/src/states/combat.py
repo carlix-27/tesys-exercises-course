@@ -1,26 +1,41 @@
 import pygame
 
 from .base_state import BaseState
-from .. import config
+from .. import config, assets
 from ..ui.widgets import Button, draw_text, draw_panel, draw_bar
 from ..ui.background import draw_dungeon_background
 
-TURN_DELAY = 0.7
-END_DELAY = 1.1
+FALLBACK_TURN_DELAY = 0.7
+ENEMY_PAUSE = 0.35
+END_DELAY = 1.0
+
+ARENA_RECT = pygame.Rect(20, 14, config.SCREEN_WIDTH - 40, 300)
+FLOOR_Y = ARENA_RECT.y + int(ARENA_RECT.height * 0.82)
+PLAYER_ANCHOR = (ARENA_RECT.x + int(ARENA_RECT.width * 0.26), FLOOR_Y)
+ENEMY_ANCHOR = (ARENA_RECT.x + int(ARENA_RECT.width * 0.74), FLOOR_Y)
+NORMAL_SCALE = 1.9
+BOSS_SCALE = 2.15
 
 
 class CombatState(BaseState):
     def enter(self, enemy=None, **kwargs):
         self.enemy = enemy
-        self.phase = "player_turn"  # player_turn -> enemy_wait -> player_turn | resolved
+        self.phase = "player_turn"
         self.timer = 0.0
         self.combat_log = [f"¡Un {enemy.name} aparece frente a ti!"]
         self.result = None  # "victory" | "defeat" | "fled"
 
-        btn_w, btn_h, gap = 190, 54, 20
+        player = self.game.player
+        self.player_sprite = assets.get_character_sprite(
+            getattr(player, "sprite_key", None), flip=False, scale=NORMAL_SCALE)
+        enemy_scale = BOSS_SCALE if enemy.is_boss else NORMAL_SCALE
+        self.enemy_sprite = assets.get_character_sprite(
+            getattr(enemy, "sprite_key", None), flip=True, scale=enemy_scale)
+
+        btn_w, btn_h, gap = 190, 50, 20
         total = btn_w * 3 + gap * 2
         start_x = (config.SCREEN_WIDTH - total) // 2
-        y = config.SCREEN_HEIGHT - 100
+        y = 514
         self.attack_button = Button((start_x, y, btn_w, btn_h), "Atacar", size=22)
         self.potion_button = Button((start_x + btn_w + gap, y, btn_w, btn_h), "Usar poción",
                                      size=20, base_color=config.DARK_GREEN, hover_color=config.GREEN)
@@ -30,6 +45,12 @@ class CombatState(BaseState):
     def _add_log(self, text):
         self.combat_log.append(text)
         self.combat_log = self.combat_log[-5:]
+
+    def _anim_duration(self, sprite, state, fallback=FALLBACK_TURN_DELAY):
+        if sprite is None:
+            return fallback
+        duration = sprite.duration_of(state)
+        return duration if duration else fallback
 
     def handle_event(self, event):
         if self.phase != "player_turn":
@@ -42,15 +63,25 @@ class CombatState(BaseState):
             self._flee()
 
     def _player_attacks(self):
+        if self.player_sprite:
+            self.player_sprite.play("attack")
+        self.phase = "player_attack"
+        self.timer = self._anim_duration(self.player_sprite, "attack")
+
+    def _resolve_player_hit(self):
         player = self.game.player
         dmg = player.damage_against(self.enemy)
         self.enemy.take_damage(dmg)
         self._add_log(f"Atacas a {self.enemy.name} y le causas {dmg} de daño.")
         if not self.enemy.is_alive:
+            if self.enemy_sprite:
+                self.enemy_sprite.play("death")
             self._finish("victory")
             return
-        self.phase = "enemy_wait"
-        self.timer = TURN_DELAY
+        if self.enemy_sprite:
+            self.enemy_sprite.play("hurt")
+        self.phase = "enemy_pause"
+        self.timer = ENEMY_PAUSE
 
     def _use_potion(self):
         player = self.game.player
@@ -59,8 +90,8 @@ class CombatState(BaseState):
             return
         healed = player.use_potion()
         self._add_log(f"Bebes una poción y recuperas {healed} de vida.")
-        self.phase = "enemy_wait"
-        self.timer = TURN_DELAY
+        self.phase = "enemy_pause"
+        self.timer = ENEMY_PAUSE
 
     def _flee(self):
         self._add_log("Huyes del combate.")
@@ -68,30 +99,54 @@ class CombatState(BaseState):
         self.phase = "resolved"
         self.timer = END_DELAY * 0.5
 
-    def _enemy_attacks(self):
+    def _start_enemy_attack(self):
+        if self.enemy_sprite:
+            self.enemy_sprite.play("attack")
+        self.phase = "enemy_attack"
+        self.timer = self._anim_duration(self.enemy_sprite, "attack")
+
+    def _resolve_enemy_hit(self):
         player = self.game.player
         dmg = self.enemy.damage_against(player)
         player.take_damage(dmg)
         self._add_log(f"{self.enemy.name} te ataca y te causa {dmg} de daño.")
         if not player.is_alive:
+            if self.player_sprite:
+                self.player_sprite.play("death")
             self._finish("defeat")
             return
+        if self.player_sprite:
+            self.player_sprite.play("hurt")
         self.phase = "player_turn"
 
     def _finish(self, result):
         self.result = result
         self.phase = "resolved"
-        self.timer = END_DELAY
+        death_sprite = self.enemy_sprite if result == "victory" else self.player_sprite
+        self.timer = self._anim_duration(death_sprite, "death", fallback=END_DELAY) + 0.4
         if result == "victory":
             gold = self.enemy.gold_reward
             self.game.player.gold += gold
             self._add_log(f"¡Has derrotado a {self.enemy.name}! Ganas {gold} de oro.")
 
     def update(self, dt):
-        if self.phase == "enemy_wait":
+        if self.player_sprite:
+            self.player_sprite.update(dt)
+        if self.enemy_sprite:
+            self.enemy_sprite.update(dt)
+
+        if self.phase == "player_attack":
             self.timer -= dt
             if self.timer <= 0:
-                self._enemy_attacks()
+                self._resolve_player_hit()
+        elif self.phase == "enemy_pause":
+            self.timer -= dt
+            if self.timer <= 0:
+                self._start_enemy_attack()
+        elif self.phase == "enemy_attack":
+            self.timer -= dt
+            if self.timer <= 0:
+                self._resolve_enemy_hit()
         elif self.phase == "resolved":
             self.timer -= dt
             if self.timer <= 0:
@@ -119,26 +174,24 @@ class CombatState(BaseState):
     def draw(self, surface):
         draw_dungeon_background(surface)
         overlay = pygame.Surface((config.SCREEN_WIDTH, config.SCREEN_HEIGHT), pygame.SRCALPHA)
-        overlay.fill((0, 0, 0, 150))
+        overlay.fill((0, 0, 0, 120))
         surface.blit(overlay, (0, 0))
 
+        self._draw_arena(surface)
+
         player = self.game.player
-        self._draw_combatant(surface, (40, 40, 380, 150), player.name, player.class_name,
-                              player.life, player.max_life, player.weapon, player.armor,
-                              config.GREEN)
-        self._draw_combatant(surface, (config.SCREEN_WIDTH - 420, 40, 380, 150),
-                              self.enemy.name, self.enemy.classification,
-                              self.enemy.life, self.enemy.max_life,
-                              self.enemy.weapon, self.enemy.armor, config.RED)
+        self._draw_stat_panel(surface, (20, 324, 470, 90), player.name, player.class_name,
+                               player.life, player.max_life, player.weapon, player.armor, config.GREEN)
+        self._draw_stat_panel(surface, (config.SCREEN_WIDTH - 490, 324, 470, 90),
+                               self.enemy.name, self.enemy.classification,
+                               self.enemy.life, self.enemy.max_life,
+                               self.enemy.weapon, self.enemy.armor, config.RED)
 
-        draw_text(surface, "VS", (config.SCREEN_WIDTH // 2, 110), size=40,
-                  color=config.GOLD, bold=True, center=True)
-
-        log_rect = (config.SCREEN_WIDTH // 2 - 320, 240, 640, 220)
+        log_rect = (20, 424, config.SCREEN_WIDTH - 40, 80)
         draw_panel(surface, log_rect, color=(20, 20, 26))
-        for i, line in enumerate(self.combat_log[-6:]):
-            draw_text(surface, line, (log_rect[0] + 20, log_rect[1] + 16 + i * 28),
-                      size=17, color=config.LIGHT_GRAY)
+        for i, line in enumerate(self.combat_log[-3:]):
+            draw_text(surface, line, (log_rect[0] + 20, log_rect[1] + 10 + i * 22),
+                      size=16, color=config.LIGHT_GRAY)
 
         self.potion_button.enabled = self.game.player.potions > 0 and self.phase == "player_turn"
         self.attack_button.enabled = self.phase == "player_turn"
@@ -148,17 +201,40 @@ class CombatState(BaseState):
         self.flee_button.draw(surface)
 
         draw_text(surface, f"Pociones: {self.game.player.potions}",
-                  (config.SCREEN_WIDTH // 2, config.SCREEN_HEIGHT - 130),
+                  (config.SCREEN_WIDTH // 2, 580),
                   size=16, color=config.GOLD, center=True)
 
-    def _draw_combatant(self, surface, rect, name, subtitle, life, max_life, weapon, armor, bar_color):
+    def _draw_arena(self, surface):
+        draw_panel(surface, ARENA_RECT, color=(18, 18, 24, 255))
+        pygame.draw.line(surface, config.PANEL_BORDER,
+                          (ARENA_RECT.x + 20, FLOOR_Y), (ARENA_RECT.right - 20, FLOOR_Y), 2)
+
+        for anchor in (PLAYER_ANCHOR, ENEMY_ANCHOR):
+            shadow = pygame.Surface((90, 24), pygame.SRCALPHA)
+            pygame.draw.ellipse(shadow, (0, 0, 0, 110), shadow.get_rect())
+            surface.blit(shadow, shadow.get_rect(center=anchor))
+
+        if self.player_sprite:
+            self.player_sprite.draw(surface, PLAYER_ANCHOR)
+        else:
+            draw_text(surface, self.game.player.name, PLAYER_ANCHOR, size=20,
+                      color=config.WHITE, bold=True, center=True)
+
+        if self.enemy_sprite:
+            self.enemy_sprite.draw(surface, ENEMY_ANCHOR)
+        else:
+            draw_text(surface, self.enemy.name, ENEMY_ANCHOR, size=20,
+                      color=config.WHITE, bold=True, center=True)
+
+        draw_text(surface, "VS", (config.SCREEN_WIDTH // 2, ARENA_RECT.y + 30), size=32,
+                  color=config.GOLD, bold=True, center=True)
+
+    def _draw_stat_panel(self, surface, rect, name, subtitle, life, max_life, weapon, armor, bar_color):
         draw_panel(surface, rect)
         x, y, w, h = rect
-        draw_text(surface, name, (x + 16, y + 12), size=22, color=config.WHITE, bold=True)
-        draw_text(surface, subtitle, (x + 16, y + 40), size=15, color=config.GRAY)
-        draw_bar(surface, (x + 16, y + 66, w - 32, 22), life, max_life, bar_color,
+        draw_text(surface, name, (x + 16, y + 10), size=20, color=config.WHITE, bold=True)
+        draw_text(surface, subtitle, (x + 16, y + 34), size=14, color=config.GRAY)
+        draw_bar(surface, (x + 16, y + 56, w - 32, 20), life, max_life, bar_color,
                  label=f"{life}/{max_life} HP")
-        draw_text(surface, f"Arma: {weapon.name} (+{weapon.damage})", (x + 16, y + 96),
-                  size=14, color=config.LIGHT_GRAY)
-        draw_text(surface, f"Armadura: {armor.name} (+{armor.defense})", (x + 16, y + 118),
-                  size=14, color=config.LIGHT_GRAY)
+        draw_text(surface, f"{weapon.name} (+{weapon.damage})  |  {armor.name} (+{armor.defense})",
+                  (x + 16, y + 80), size=13, color=config.LIGHT_GRAY)

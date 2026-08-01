@@ -15,6 +15,7 @@ CLASSES = {
         speed=10,
         weapon=("Espada de hierro", 10),
         armor=("Armadura de acero", 10),
+        max_mana=20,
         blurb="Resistente y equilibrado. Golpea fuerte y aguanta el castigo.",
         sprite="espadachin",
     ),
@@ -25,8 +26,20 @@ CLASSES = {
         speed=15,
         weapon=("Espada de acero", 15),
         armor=("Armadura de hierro", 5),
+        max_mana=35,
         blurb="Frágil pero letal y veloz. Golpea primero, pero no aguanta mucho.",
         sprite="picaro",
+    ),
+    "mago": dict(
+        label="Mago",
+        name="Mago",
+        max_life=60,
+        speed=8,
+        weapon=("Bastón arcano", 6),
+        armor=("Túnica encantada", 3),
+        max_mana=100,
+        blurb="Frágil cuerpo a cuerpo, pero con un pozo de maná enorme para dominar el fuego y el rayo.",
+        sprite="mago",
     ),
 }
 
@@ -36,7 +49,7 @@ def make_player(class_key, wallet=None):
     weapon = Weapon(*data["weapon"])
     armor = Armor(*data["armor"])
     player = Player(data["name"], data["label"], data["max_life"], data["speed"], weapon, armor,
-                     wallet=wallet)
+                     max_mana=data.get("max_mana", 0), wallet=wallet)
     player.sprite_key = data.get("sprite")
     return player
 
@@ -60,10 +73,23 @@ ELITE_TEMPLATES = [
          weapon=("Filo espectral", 15), armor=("Bruma", 5), gold=20, sprite="espectro"),
 ]
 
-BOSS_TEMPLATE = dict(
-    name="Rey Goblin", classification="Monarca Goblin", life=120, speed=12,
-    weapon=("Espada real de acero templado", 16), armor=("Armadura real", 4), gold=150,
-    sprite="goblin",
+BOSS_TEMPLATES = [
+    dict(name="Rey Goblin", classification="Monarca Goblin", life=120, speed=12,
+         weapon=("Espada real de acero templado", 16), armor=("Armadura real", 4), gold=150,
+         sprite="goblin", mechanic=None),
+    dict(name="Jefe Esqueleto", classification="Señor de los Huesos", life=140, speed=9,
+         weapon=("Guadaña ósea", 14), armor=("Coraza de huesos", 6), gold=180,
+         sprite="jefe_esqueleto", mechanic="bones"),
+    dict(name="Bruja del Bosque Negro", classification="Hechicera maldita", life=110, speed=11,
+         weapon=("Cetro maldito", 12), armor=("Manto sombrío", 3), gold=170,
+         sprite="bruja", mechanic="hex"),
+]
+
+# Spawned alongside the Jefe Esqueleto; when the three of them die the boss
+# "regenerates" from their bones (see combat.py's BOSS_REGEN_RATIO).
+MINI_ESQUELETO_TEMPLATE = dict(
+    name="Hueso Andante", classification="Esqueleto menor", life=25, speed=10,
+    weapon=("Hueso afilado", 6), armor=("Huesos sueltos", 1), gold=0, sprite="esqueleto",
 )
 
 WEAPON_UPGRADES = [
@@ -89,6 +115,7 @@ def _build_enemy(template, depth, is_boss=False):
     enemy = Enemy(
         template["name"], life, template["speed"], weapon, armor,
         template["classification"], is_boss=is_boss, gold_reward=template["gold"],
+        mechanic=template.get("mechanic"),
     )
     enemy.sprite_key = template.get("sprite")
     return enemy
@@ -102,11 +129,25 @@ def random_elite(depth):
     return _build_enemy(random.choice(ELITE_TEMPLATES), depth)
 
 
-def boss_enemy(depth):
-    # The template is already tuned for the depth at which the boss appears,
-    # so it does not receive the extra depth scaling regular enemies get
-    # (otherwise the fight becomes unwinnable with starting-tier gear).
-    return _build_enemy(BOSS_TEMPLATE, depth=0, is_boss=True)
+def pick_boss_template():
+    return random.choice(BOSS_TEMPLATES)
+
+
+def boss_encounter(depth, template=None):
+    """Builds the full enemy line-up for the boss fight.
+
+    Bosses tuned with mechanic == "bones" (Jefe Esqueleto) show up with 3
+    mini-skeletons ahead of them in the queue; combat.py pops them off one
+    at a time and regenerates the boss once the last one falls. Templates
+    are already tuned for the depth at which the boss appears, so (like the
+    old boss_enemy()) they skip the extra depth scaling regular enemies get.
+    """
+    template = template or pick_boss_template()
+    enemies = []
+    if template.get("mechanic") == "bones":
+        enemies.extend(_build_enemy(MINI_ESQUELETO_TEMPLATE, depth=0) for _ in range(3))
+    enemies.append(_build_enemy(template, depth=0, is_boss=True))
+    return enemies
 
 
 def open_chest(player, rare=False):
@@ -121,8 +162,8 @@ def open_chest(player, rare=False):
         return f"Encuentras un cofre con {amount} monedas de oro."
 
     if roll < 0.6:
-        player.potions += 1
-        return "Encuentras una poción de curación."
+        player.add_item("pocion_vida")
+        return "Encuentras una poción de vida."
 
     if roll < 0.8:
         candidates = [w for w in WEAPON_UPGRADES if w.damage > player.weapon.damage]
@@ -147,11 +188,12 @@ SHOP_CATEGORIES = [
     ("equipamiento", "Equipamiento"),
     ("puertas", "Puertas"),
     ("combate", "Combate"),
+    ("pociones", "Pociones"),
 ]
 
 SHOP_ITEMS = [
     dict(key="libro", name="Libro Arcano", icon=(0, 0), price=40, category="equipamiento",
-         description="Hechizos que ignoran la armadura. Equipar antes de elegir puerta."),
+         description="Da poder de maná y permite lanzar hechizos de fuego o rayo. Equipar antes de elegir puerta."),
     dict(key="llave", name="Llave Dorada", icon=(3, 0), price=35, category="puertas",
          description="Abre la puerta del tesoro: arma legendaria o armadura al azar."),
     dict(key="lentes", name="Lentes Reveladores", icon=(2, 1), price=25, category="puertas",
@@ -162,6 +204,12 @@ SHOP_ITEMS = [
          description="Desintegra al enemigo al instante (los jefes solo se queman)."),
     dict(key="pistola", name="Pistola Vieja", icon=(0, 3), price=100, category="combate",
          description="Mata a cualquier enemigo, incluso jefes, de un disparo."),
+    dict(key="pocion_vida", name="Poción de Vida", icon_folder="vida", price=20, category="pociones",
+         description="Restaura 40 puntos de vida al instante."),
+    dict(key="pocion_mana", name="Poción de Maná", icon_folder="mana", price=20, category="pociones",
+         description="Restaura 35 puntos de maná al instante."),
+    dict(key="pocion_veneno", name="Poción de Veneno", icon_folder="veneno", price=25, category="pociones",
+         description="Se la arrojas al enemigo: le drena hasta 30 de vida con el tiempo."),
 ]
 
 

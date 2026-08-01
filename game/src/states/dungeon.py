@@ -13,6 +13,7 @@ DOOR_H = 236
 class DungeonState(BaseState):
     def enter(self, **kwargs):
         self.boss_incoming = self.game.depth >= config.BOSS_DEPTH
+        self.boss_template = None
         self.shop_button = Button((config.SCREEN_WIDTH - 190, 20, 170, 44), "Tienda", size=20,
                                    base_color=config.DARK_GREEN, hover_color=config.GREEN)
         self.book_button = Button((config.SCREEN_WIDTH - 190, 72, 170, 40), "Equipar Libro",
@@ -25,10 +26,12 @@ class DungeonState(BaseState):
         player = self.game.player
 
         if self.boss_incoming:
+            if self.boss_template is None:
+                self.boss_template = data.pick_boss_template()
             rect = pygame.Rect(config.SCREEN_WIDTH // 2 - 160, 300, 320, 140)
             self.door_buttons.append((None, rect, Button(
                 (rect.x + 30, rect.bottom - 60, rect.width - 60, 44),
-                "Enfrentar al Rey Goblin", size=18,
+                f"Enfrentar a {self.boss_template['name']}", size=16,
                 base_color=config.DARK_RED, hover_color=config.RED)))
             return
 
@@ -70,9 +73,9 @@ class DungeonState(BaseState):
     def _choose_door(self, index):
         player = self.game.player
         if self.boss_incoming:
-            enemy = data.boss_enemy(self.game.depth)
-            self.game.log(f"¡El {enemy.name} bloquea tu camino!")
-            self.game.change_state("combat", enemy=enemy)
+            enemies = data.boss_encounter(self.game.depth, template=self.boss_template)
+            self.game.log(f"¡Te enfrentas a {self.boss_template['name']}!")
+            self.game.change_state("combat", enemies=enemies)
             return
 
         if index == KEY_DOOR:
@@ -145,25 +148,28 @@ class DungeonState(BaseState):
                                        (rect.x + 14, rect.y + 135, rect.width - 28, 40),
                                        size=12, color=config.GOLD)
             else:
-                draw_text(surface, "El Rey Goblin te espera", (rect.centerx, rect.y + 30),
+                draw_text(surface, f"{self.boss_template['name']} te espera", (rect.centerx, rect.y + 30),
                           size=18, color=config.WHITE, bold=True, center=True)
             button.draw(surface)
 
         self._draw_log(surface)
 
     def _draw_hud(self, surface, player):
-        panel_rect = (20, 20, 340, 120)
+        panel_rect = (20, 20, 340, 148)
         draw_panel(surface, panel_rect)
         draw_text(surface, f"{player.name} ({player.class_name})", (36, 32),
                   size=18, color=config.WHITE, bold=True)
-        draw_bar(surface, (36, 60, 300, 22), player.life, player.max_life,
+        draw_bar(surface, (36, 58, 300, 20), player.life, player.max_life,
                  config.GREEN, label=f"{player.life}/{player.max_life} HP")
+        if player.max_mana > 0:
+            draw_bar(surface, (36, 82, 300, 16), player.mana, player.max_mana,
+                     config.BLUE, label=f"{player.mana}/{player.max_mana} MP")
         coin_icon = assets.get_item_icon((1, 1), scale=1.2)
-        surface.blit(coin_icon, (36, 90))
-        draw_text(surface, f"{player.gold}   Pociones: {player.potions}",
-                  (36 + coin_icon.get_width() + 6, 92), size=16, color=config.GOLD)
+        surface.blit(coin_icon, (36, 106))
+        draw_text(surface, f"{player.gold}",
+                  (36 + coin_icon.get_width() + 6, 108), size=16, color=config.GOLD)
         draw_text(surface, f"Arma: {player.weapon.name} (+{player.weapon.damage})",
-                  (36, 114), size=14, color=config.LIGHT_GRAY)
+                  (36, 132), size=14, color=config.LIGHT_GRAY)
 
     def _draw_log(self, surface):
         log_rect = (20, config.SCREEN_HEIGHT - 130, config.SCREEN_WIDTH - 40, 110)

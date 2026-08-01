@@ -106,7 +106,10 @@ class ShopState(BaseState):
 
         for item, rect, buy_btn in self.item_cards:
             draw_panel(surface, rect)
-            icon = assets.get_item_icon(item["icon"], scale=2.5)
+            if "icon_folder" in item:
+                icon = assets.get_potion_icon(item["icon_folder"], scale=2.5)
+            else:
+                icon = assets.get_item_icon(item["icon"], scale=2.5)
             icon_rect = icon.get_rect(topleft=(rect.x + 16, rect.y + 14))
             surface.blit(icon, icon_rect)
             draw_text(surface, item["name"], (icon_rect.right + 14, rect.y + 18),

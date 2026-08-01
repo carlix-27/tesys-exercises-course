@@ -1,12 +1,16 @@
+import random
+
 import pygame
 
 from .base_state import BaseState
 from .. import config, assets
 from ..ui.widgets import Button, draw_text, draw_panel, draw_bar
+from ..ui.sprites import Animator
 from ..ui.background import draw_dungeon_background
 
 FALLBACK_TURN_DELAY = 0.7
 ENEMY_PAUSE = 0.35
+DEFEAT_PAUSE = 0.6
 END_DELAY = 1.0
 
 ARENA_RECT = pygame.Rect(20, 14, config.SCREEN_WIDTH - 40, 300)
@@ -16,52 +20,81 @@ ENEMY_ANCHOR = (ARENA_RECT.x + int(ARENA_RECT.width * 0.74), FLOOR_Y)
 NORMAL_SCALE = 1.9
 BOSS_SCALE = 2.15
 
-LOG_RECT = (20, 420, config.SCREEN_WIDTH - 40, 70)
-ITEM_ROW_Y = 496
+STAT_PANEL_H = 122
+LOG_RECT = (20, 452, config.SCREEN_WIDTH - 40, 62)
+ITEM_ROW_Y = 522
 ITEM_ROW_H = 34
-MAIN_ROW_Y = 546
+MAIN_ROW_Y = 568
 MAIN_ROW_H = 50
 
-# --- Item effect tuning ---------------------------------------------------
-SPELL_DAMAGE = 24          # Libro: flat magic damage, ignores armor
+# --- Item / spell effect tuning -------------------------------------------
+FUEGO_COST = 20           # Libro: fireball, ignores armor
+FUEGO_DAMAGE = 30
+RAYO_COST = 12            # Libro: lightning bolt, ignores armor, cheaper/weaker
+RAYO_DAMAGE = 18
+EFFECT_FPS = 12
 LINTERNA_BOSS_DAMAGE = 40  # Linterna can't one-shot the boss, just scorches it
 PARALYSIS_DURATION = 5.0   # Reloj: seconds the enemy skips retaliating
+POCION_VIDA_HEAL = 40
+POCION_MANA_RESTORE = 35
+POISON_TOTAL = 30          # Veneno: total damage dealt over several ticks
+POISON_TICK = 6
+BOSS_REGEN_RATIO = 0.4     # Jefe Esqueleto: life restored once its minions die
+HEX_CHANCE = 0.5           # Bruja: odds an attack also poisons the player
 
 
 class CombatState(BaseState):
-    def enter(self, enemy=None, **kwargs):
-        self.enemy = enemy
+    def enter(self, enemy=None, enemies=None, **kwargs):
+        self.enemies = list(enemies) if enemies else [enemy]
         self.phase = "player_turn"
         self.timer = 0.0
         self.pending_mode = "normal"
         self.paralysis_timer = 0.0
-        self.combat_log = [f"¡Un {enemy.name} aparece frente a ti!"]
+        self.gold_earned = 0
+        self.active_effects = []
         self.result = None  # "victory" | "defeat" | "fled"
+
+        if len(self.enemies) > 1:
+            boss = self.enemies[-1]
+            self.combat_log = [f"¡{boss.name} aparece junto a {len(self.enemies) - 1} secuaces!"]
+        else:
+            self.combat_log = [f"¡Un {self.enemies[0].name} aparece frente a ti!"]
 
         player = self.game.player
         self.player_sprite = assets.get_character_sprite(
             getattr(player, "sprite_key", None), flip=False, scale=NORMAL_SCALE)
-        enemy_scale = BOSS_SCALE if enemy.is_boss else NORMAL_SCALE
-        self.enemy_sprite = assets.get_character_sprite(
-            getattr(enemy, "sprite_key", None), flip=True, scale=enemy_scale)
+        self._set_front_enemy()
 
-        btn_w, btn_h, gap = 190, MAIN_ROW_H, 20
-        total = btn_w * 3 + gap * 2
+        btn_w, btn_h, gap = 220, MAIN_ROW_H, 30
+        total = btn_w * 2 + gap
         start_x = (config.SCREEN_WIDTH - total) // 2
         y = MAIN_ROW_Y
         self.attack_button = Button((start_x, y, btn_w, btn_h), "Atacar", size=22)
-        self.potion_button = Button((start_x + btn_w + gap, y, btn_w, btn_h), "Usar poción",
-                                     size=20, base_color=config.DARK_GREEN, hover_color=config.GREEN)
-        self.flee_button = Button((start_x + (btn_w + gap) * 2, y, btn_w, btn_h), "Huir",
+        self.flee_button = Button((start_x + btn_w + gap, y, btn_w, btn_h), "Huir",
                                    size=22, base_color=config.PANEL, hover_color=config.PANEL_LIGHT)
 
         self._build_item_buttons()
+
+    def _set_front_enemy(self):
+        self.enemy = self.enemies[0]
+        enemy_scale = BOSS_SCALE if self.enemy.is_boss else NORMAL_SCALE
+        self.enemy_sprite = assets.get_character_sprite(
+            getattr(self.enemy, "sprite_key", None), flip=True, scale=enemy_scale)
 
     def _build_item_buttons(self):
         player = self.game.player
         available = []
         if player.equipped_book:
-            available.append(("spell", "Hechizo", self._use_spell))
+            if player.mana >= FUEGO_COST:
+                available.append(("fuego", "Fuego", self._use_fuego))
+            if player.mana >= RAYO_COST:
+                available.append(("rayo", "Rayo", self._use_rayo))
+        if player.has_item("pocion_vida"):
+            available.append(("pocion_vida", f"Vida (x{player.inventory['pocion_vida']})", self._use_pocion_vida))
+        if player.has_item("pocion_mana"):
+            available.append(("pocion_mana", f"Maná (x{player.inventory['pocion_mana']})", self._use_pocion_mana))
+        if player.has_item("pocion_veneno"):
+            available.append(("pocion_veneno", f"Veneno (x{player.inventory['pocion_veneno']})", self._use_pocion_veneno))
         if player.has_item("reloj"):
             available.append(("reloj", f"Reloj (x{player.inventory['reloj']})", self._use_reloj))
         if player.has_item("linterna"):
@@ -72,12 +105,14 @@ class CombatState(BaseState):
         self.item_buttons = []
         if not available:
             return
-        btn_w, gap = 160, 14
+        gap = 8
+        max_total = config.SCREEN_WIDTH - 60
+        btn_w = min(120, (max_total - gap * (len(available) - 1)) // len(available))
         total = btn_w * len(available) + gap * (len(available) - 1)
         start_x = (config.SCREEN_WIDTH - total) // 2
         for i, (key, label, handler) in enumerate(available):
             rect = (start_x + i * (btn_w + gap), ITEM_ROW_Y, btn_w, ITEM_ROW_H)
-            btn = Button(rect, label, size=14, base_color=config.PANEL, hover_color=config.PANEL_LIGHT)
+            btn = Button(rect, label, size=12, base_color=config.PANEL, hover_color=config.PANEL_LIGHT)
             self.item_buttons.append((key, btn, handler))
 
     def _add_log(self, text):
@@ -96,9 +131,6 @@ class CombatState(BaseState):
         if self.attack_button.handle_event(event):
             self._player_attacks()
             return
-        if self.potion_button.handle_event(event):
-            self._use_potion()
-            return
         if self.flee_button.handle_event(event):
             self._flee()
             return
@@ -114,8 +146,50 @@ class CombatState(BaseState):
         self.phase = "player_attack"
         self.timer = self._anim_duration(self.player_sprite, "attack")
 
-    def _use_spell(self):
-        self._player_attacks(mode="spell")
+    def _use_fuego(self):
+        player = self.game.player
+        if not player.spend_mana(FUEGO_COST):
+            return
+        self._build_item_buttons()
+        self._player_attacks(mode="fuego")
+
+    def _use_rayo(self):
+        player = self.game.player
+        if not player.spend_mana(RAYO_COST):
+            return
+        self._build_item_buttons()
+        self._player_attacks(mode="rayo")
+
+    def _use_pocion_vida(self):
+        player = self.game.player
+        if not player.consume_item("pocion_vida"):
+            return
+        healed = player.heal(POCION_VIDA_HEAL)
+        self._add_log(f"Bebes una poción de vida y recuperas {healed} de vida.")
+        self._build_item_buttons()
+        self.phase = "enemy_pause"
+        self.timer = ENEMY_PAUSE
+
+    def _use_pocion_mana(self):
+        player = self.game.player
+        if not player.consume_item("pocion_mana"):
+            return
+        restored = player.restore_mana(POCION_MANA_RESTORE)
+        self._add_log(f"Bebes una poción de maná y recuperas {restored} de maná.")
+        self._build_item_buttons()
+        self.phase = "enemy_pause"
+        self.timer = ENEMY_PAUSE
+
+    def _use_pocion_veneno(self):
+        player = self.game.player
+        if not player.consume_item("pocion_veneno"):
+            return
+        self.enemy.poison_remaining = POISON_TOTAL
+        self.enemy.poison_tick = POISON_TICK
+        self._add_log(f"Arrojas una poción de veneno sobre {self.enemy.name}. Empieza a envenenarse.")
+        self._build_item_buttons()
+        self.phase = "enemy_pause"
+        self.timer = ENEMY_PAUSE
 
     def _use_reloj(self):
         player = self.game.player
@@ -138,12 +212,24 @@ class CombatState(BaseState):
         self._build_item_buttons()
         self._player_attacks(mode="pistola")
 
+    def _spawn_effect(self, effect_key, anchor):
+        frames = assets.get_effect_frames(effect_key)
+        if not frames:
+            return
+        animator = Animator(frames, fps=EFFECT_FPS, loop=False)
+        self.active_effects.append([animator, anchor])
+
     def _resolve_player_hit(self):
         player = self.game.player
         mode = self.pending_mode
-        if mode == "spell":
-            dmg = SPELL_DAMAGE
-            self._add_log(f"Lanzas un hechizo arcano a {self.enemy.name} y le causas {dmg} de daño mágico.")
+        if mode == "fuego":
+            dmg = FUEGO_DAMAGE
+            self._spawn_effect("fuego", ENEMY_ANCHOR)
+            self._add_log(f"Lanzas una bola de fuego a {self.enemy.name} y le causas {dmg} de daño mágico.")
+        elif mode == "rayo":
+            dmg = RAYO_DAMAGE
+            self._spawn_effect("rayo", ENEMY_ANCHOR)
+            self._add_log(f"Invocas un rayo sobre {self.enemy.name} y le causas {dmg} de daño mágico.")
         elif mode == "linterna":
             if self.enemy.is_boss:
                 dmg = LINTERNA_BOSS_DAMAGE
@@ -162,7 +248,8 @@ class CombatState(BaseState):
         if not self.enemy.is_alive:
             if self.enemy_sprite:
                 self.enemy_sprite.play("death")
-            self._finish("victory")
+            self.phase = "enemy_defeated_pause"
+            self.timer = self._anim_duration(self.enemy_sprite, "death", fallback=DEFEAT_PAUSE)
             return
         if self.enemy_sprite:
             self.enemy_sprite.play("hurt")
@@ -173,13 +260,23 @@ class CombatState(BaseState):
             self.phase = "enemy_pause"
             self.timer = ENEMY_PAUSE
 
-    def _use_potion(self):
-        player = self.game.player
-        if player.potions <= 0:
-            self._add_log("No tienes pociones.")
+    def _enemy_defeated(self):
+        defeated = self.enemies.pop(0)
+        self.gold_earned += defeated.gold_reward
+        if not self.enemies:
+            self._finish("victory")
             return
-        healed = player.use_potion()
-        self._add_log(f"Bebes una poción y recuperas {healed} de vida.")
+        was_last_minion = (not defeated.is_boss and self.enemies[0].is_boss
+                            and self.enemies[0].mechanic == "bones")
+        self._set_front_enemy()
+        if self.enemy_sprite:
+            self.enemy_sprite.play("idle")
+        if was_last_minion:
+            heal = int(self.enemy.max_life * BOSS_REGEN_RATIO)
+            self.enemy.heal(heal)
+            self._add_log(f"¡{self.enemy.name} absorbe los huesos de sus siervos caídos y recupera {heal} de vida!")
+        else:
+            self._add_log(f"Derrotas a {defeated.name}.")
         self.phase = "enemy_pause"
         self.timer = ENEMY_PAUSE
 
@@ -195,11 +292,22 @@ class CombatState(BaseState):
         self.phase = "enemy_attack"
         self.timer = self._anim_duration(self.enemy_sprite, "attack")
 
+    def _tick_poison(self, character):
+        remaining = character.poison_remaining
+        if remaining <= 0:
+            return False
+        tick = min(character.poison_tick, remaining)
+        character.take_damage(tick)
+        character.poison_remaining = remaining - tick
+        self._add_log(f"{character.name} sufre {tick} de daño por veneno.")
+        return not character.is_alive
+
     def _resolve_enemy_hit(self):
         player = self.game.player
         dmg = self.enemy.damage_against(player)
         player.take_damage(dmg)
         self._add_log(f"{self.enemy.name} te ataca y te causa {dmg} de daño.")
+
         if not player.is_alive:
             if self.player_sprite:
                 self.player_sprite.play("death")
@@ -207,6 +315,21 @@ class CombatState(BaseState):
             return
         if self.player_sprite:
             self.player_sprite.play("hurt")
+        # Tick any poison inflicted on a previous turn before possibly
+        # inflicting a fresh one below, so a new hex doesn't also lose a
+        # tick's worth of damage on the very turn it lands.
+        if self._tick_poison(player):
+            if self.player_sprite:
+                self.player_sprite.play("death")
+            self._finish("defeat")
+            return
+
+        if (self.enemy.mechanic == "hex" and player.poison_remaining <= 0
+                and random.random() < HEX_CHANCE):
+            player.poison_remaining = POISON_TOTAL
+            player.poison_tick = POISON_TICK
+            self._add_log(f"¡{self.enemy.name} te maldice con un hechizo venenoso!")
+            self._spawn_effect(random.choice(["fuego", "rayo"]), PLAYER_ANCHOR)
         self.phase = "player_turn"
 
     def _finish(self, result):
@@ -215,9 +338,8 @@ class CombatState(BaseState):
         death_sprite = self.enemy_sprite if result == "victory" else self.player_sprite
         self.timer = self._anim_duration(death_sprite, "death", fallback=END_DELAY) + 0.4
         if result == "victory":
-            gold = self.enemy.gold_reward
-            self.game.player.gold += gold
-            self._add_log(f"¡Has derrotado a {self.enemy.name}! Ganas {gold} de oro.")
+            self.game.player.gold += self.gold_earned
+            self._add_log(f"¡Has derrotado a {self.enemy.name}! Ganas {self.gold_earned} de oro.")
 
     def update(self, dt):
         if self.player_sprite:
@@ -226,6 +348,9 @@ class CombatState(BaseState):
             self.enemy_sprite.update(dt)
         if self.paralysis_timer > 0:
             self.paralysis_timer = max(0.0, self.paralysis_timer - dt)
+        for effect in self.active_effects:
+            effect[0].update(dt)
+        self.active_effects = [e for e in self.active_effects if not e[0].finished]
 
         if self.phase == "player_attack":
             self.timer -= dt
@@ -234,7 +359,17 @@ class CombatState(BaseState):
         elif self.phase == "enemy_pause":
             self.timer -= dt
             if self.timer <= 0:
-                self._start_enemy_attack()
+                if self._tick_poison(self.enemy):
+                    if self.enemy_sprite:
+                        self.enemy_sprite.play("death")
+                    self.phase = "enemy_defeated_pause"
+                    self.timer = self._anim_duration(self.enemy_sprite, "death", fallback=DEFEAT_PAUSE)
+                else:
+                    self._start_enemy_attack()
+        elif self.phase == "enemy_defeated_pause":
+            self.timer -= dt
+            if self.timer <= 0:
+                self._enemy_defeated()
         elif self.phase == "enemy_attack":
             self.timer -= dt
             if self.timer <= 0:
@@ -272,12 +407,12 @@ class CombatState(BaseState):
         self._draw_arena(surface)
 
         player = self.game.player
-        self._draw_stat_panel(surface, (20, 324, 470, 90), player.name, player.class_name,
-                               player.life, player.max_life, player.weapon, player.armor, config.GREEN)
-        self._draw_stat_panel(surface, (config.SCREEN_WIDTH - 490, 324, 470, 90),
-                               self.enemy.name, self.enemy.classification,
-                               self.enemy.life, self.enemy.max_life,
-                               self.enemy.weapon, self.enemy.armor, config.RED)
+        self._draw_stat_panel(surface, (20, 324, 470, STAT_PANEL_H), player, player.class_name, config.GREEN)
+        enemy_subtitle = self.enemy.classification
+        if len(self.enemies) > 1:
+            enemy_subtitle += f"  (+{len(self.enemies) - 1} más)"
+        self._draw_stat_panel(surface, (config.SCREEN_WIDTH - 490, 324, 470, STAT_PANEL_H),
+                               self.enemy, enemy_subtitle, config.RED)
 
         draw_panel(surface, LOG_RECT, color=(20, 20, 26))
         for i, line in enumerate(self.combat_log[-3:]):
@@ -293,12 +428,9 @@ class CombatState(BaseState):
             btn.enabled = self.phase == "player_turn"
             btn.draw(surface)
 
-        self.potion_button.text = f"Usar poción ({player.potions})"
-        self.potion_button.enabled = player.potions > 0 and self.phase == "player_turn"
         self.attack_button.enabled = self.phase == "player_turn"
         self.flee_button.enabled = self.phase == "player_turn"
         self.attack_button.draw(surface)
-        self.potion_button.draw(surface)
         self.flee_button.draw(surface)
 
     def _draw_arena(self, surface):
@@ -323,15 +455,27 @@ class CombatState(BaseState):
             draw_text(surface, self.enemy.name, ENEMY_ANCHOR, size=20,
                       color=config.WHITE, bold=True, center=True)
 
+        for animator, anchor in self.active_effects:
+            frame = animator.current_frame()
+            rect = frame.get_rect(center=(anchor[0], anchor[1] - 70))
+            surface.blit(frame, rect)
+
         draw_text(surface, "VS", (config.SCREEN_WIDTH // 2, ARENA_RECT.y + 30), size=32,
                   color=config.GOLD, bold=True, center=True)
 
-    def _draw_stat_panel(self, surface, rect, name, subtitle, life, max_life, weapon, armor, bar_color):
+    def _draw_stat_panel(self, surface, rect, character, subtitle, bar_color):
         draw_panel(surface, rect)
         x, y, w, h = rect
-        draw_text(surface, name, (x + 16, y + 10), size=20, color=config.WHITE, bold=True)
-        draw_text(surface, subtitle, (x + 16, y + 34), size=14, color=config.GRAY)
-        draw_bar(surface, (x + 16, y + 56, w - 32, 20), life, max_life, bar_color,
-                 label=f"{life}/{max_life} HP")
-        draw_text(surface, f"{weapon.name} (+{weapon.damage})  |  {armor.name} (+{armor.defense})",
-                  (x + 16, y + 80), size=13, color=config.LIGHT_GRAY)
+        draw_text(surface, character.name, (x + 16, y + 10), size=20, color=config.WHITE, bold=True)
+        draw_text(surface, subtitle, (x + 16, y + 32), size=14, color=config.GRAY)
+        draw_bar(surface, (x + 16, y + 52, w - 32, 18), character.life, character.max_life, bar_color,
+                 label=f"{character.life}/{character.max_life} HP")
+        if character.max_mana > 0:
+            draw_bar(surface, (x + 16, y + 74, w - 32, 14), character.mana, character.max_mana, config.BLUE,
+                     label=f"{character.mana}/{character.max_mana} MP")
+        if character.poison_remaining > 0:
+            draw_text(surface, f"Envenenado: {character.poison_remaining} de daño pendiente",
+                      (x + 16, y + 92), size=12, color=config.PURPLE)
+        draw_text(surface, f"{character.weapon.name} (+{character.weapon.damage})  |  "
+                            f"{character.armor.name} (+{character.armor.defense})",
+                  (x + 16, y + h - 20), size=13, color=config.LIGHT_GRAY)

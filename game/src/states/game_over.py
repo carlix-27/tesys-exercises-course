@@ -33,7 +33,7 @@ class GameOverState(BaseState):
         player = self.game.player
         if self.game.victory:
             title, color = "¡HAS CONQUISTADO LA MAZMORRA!", config.GOLD
-            subtitle = "El Rey Goblin yace derrotado. Tu leyenda comienza."
+            subtitle = "El jefe de la mazmorra yace derrotado. Tu leyenda comienza."
         else:
             title, color = "HAS CAÍDO EN LA OSCURIDAD", config.RED
             subtitle = "La mazmorra reclama otra víctima."

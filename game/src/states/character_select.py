@@ -10,8 +10,10 @@ class CharacterSelectState(BaseState):
     def enter(self, **kwargs):
         self.class_keys = list(data.CLASSES.keys())
         self.cards = []
-        card_w, card_h = 320, 380
-        gap = 40
+        if len(self.class_keys) > 2:
+            card_w, card_h, gap = 290, 380, 26
+        else:
+            card_w, card_h, gap = 320, 380, 40
         total_w = card_w * len(self.class_keys) + gap * (len(self.class_keys) - 1)
         start_x = (config.SCREEN_WIDTH - total_w) // 2
         y = 130
@@ -59,12 +61,13 @@ class CharacterSelectState(BaseState):
 
             lines = [
                 f"Vida: {info['max_life']}",
+                f"Maná: {info.get('max_mana', 0)}",
                 f"Velocidad: {info['speed']}",
                 f"Arma: {info['weapon'][0]} (+{info['weapon'][1]} dmg)",
                 f"Armadura: {info['armor'][0]} (+{info['armor'][1]} def)",
             ]
             for i, line in enumerate(lines):
-                draw_text(surface, line, (rect.x + 24, rect.y + 90 + i * 30),
+                draw_text(surface, line, (rect.x + 24, rect.y + 85 + i * 26),
                           size=18, color=config.LIGHT_GRAY)
 
             draw_text_wrapped(surface, info["blurb"],

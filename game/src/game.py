@@ -30,6 +30,13 @@ class Game:
         self.message_log = []
         self.victory = False
 
+        # Modo supervivencia: elegido en el menú, persiste entre partidas
+        # hasta que el jugador lo cambie. En este modo el jefe reaparece
+        # cada BOSS_DEPTH salas en lugar de terminar la partida.
+        self.survival_mode = False
+        self.next_boss_depth = config.BOSS_DEPTH
+        self.rounds_survived = 0
+
         self.states = {
             "menu": MenuState(self),
             "character_select": CharacterSelectState(self),
@@ -56,6 +63,8 @@ class Game:
         self.depth = 1
         self.message_log = []
         self.victory = False
+        self.next_boss_depth = config.BOSS_DEPTH
+        self.rounds_survived = 0
 
     def run(self):
         while self.running:

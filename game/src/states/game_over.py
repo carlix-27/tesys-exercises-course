@@ -9,7 +9,8 @@ from ..ui.background import draw_dungeon_background
 class GameOverState(BaseState):
     def enter(self, **kwargs):
         cx = config.SCREEN_WIDTH // 2
-        self.retry_button = Button((cx - 150, 440, 300, 54), "Volver al menú", size=22)
+        button_y = 474 if self.game.survival_mode else 440
+        self.retry_button = Button((cx - 150, button_y, 300, 54), "Volver al menú", size=22)
 
     def handle_event(self, event):
         if event.type == pygame.KEYDOWN and event.key in (pygame.K_RETURN, pygame.K_KP_ENTER, pygame.K_ESCAPE):
@@ -34,6 +35,9 @@ class GameOverState(BaseState):
         if self.game.victory:
             title, color = "¡HAS CONQUISTADO LA MAZMORRA!", config.GOLD
             subtitle = "El jefe de la mazmorra yace derrotado. Tu leyenda comienza."
+        elif self.game.survival_mode and self.game.rounds_survived > 0:
+            title, color = "HAS CAÍDO EN LA OSCURIDAD", config.RED
+            subtitle = f"Sobreviviste {self.game.rounds_survived} ronda(s) antes de caer."
         else:
             title, color = "HAS CAÍDO EN LA OSCURIDAD", config.RED
             subtitle = "La mazmorra reclama otra víctima."
@@ -44,12 +48,15 @@ class GameOverState(BaseState):
                   color=config.LIGHT_GRAY, center=True)
 
         if player is not None:
-            panel_rect = (config.SCREEN_WIDTH // 2 - 200, 260, 400, 150)
+            extra_h = 34 if self.game.survival_mode else 0
+            panel_rect = (config.SCREEN_WIDTH // 2 - 200, 260, 400, 150 + extra_h)
             draw_panel(surface, panel_rect)
             lines = [
                 f"Personaje: {player.name} ({player.class_name})",
                 f"Salas superadas: {player.rooms_cleared}",
             ]
+            if self.game.survival_mode:
+                lines.append(f"Rondas de jefe superadas: {self.game.rounds_survived}")
             for i, line in enumerate(lines):
                 draw_text(surface, line, (panel_rect[0] + 24, panel_rect[1] + 24 + i * 34),
                           size=18, color=config.WHITE)

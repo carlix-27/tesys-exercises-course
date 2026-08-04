@@ -12,7 +12,7 @@ DOOR_H = 236
 
 class DungeonState(BaseState):
     def enter(self, **kwargs):
-        self.boss_incoming = self.game.depth >= config.BOSS_DEPTH
+        self.boss_incoming = self.game.depth >= self.game.next_boss_depth
         self.boss_template = None
         self.shop_button = Button((config.SCREEN_WIDTH - 190, 20, 170, 44), "Tienda", size=20,
                                    base_color=config.DARK_GREEN, hover_color=config.GREEN)
@@ -98,7 +98,7 @@ class DungeonState(BaseState):
     def _advance_room(self):
         self.game.depth += 1
         self.game.player.rooms_cleared += 1
-        self.boss_incoming = self.game.depth >= config.BOSS_DEPTH
+        self.boss_incoming = self.game.depth >= self.game.next_boss_depth
         self._build_buttons()
 
     def update(self, dt):
@@ -155,7 +155,7 @@ class DungeonState(BaseState):
         self._draw_log(surface)
 
     def _draw_hud(self, surface, player):
-        panel_rect = (20, 20, 340, 148)
+        panel_rect = (20, 20, 340, 148 + (26 if self.game.survival_mode else 0))
         draw_panel(surface, panel_rect)
         draw_text(surface, f"{player.name} ({player.class_name})", (36, 32),
                   size=18, color=config.WHITE, bold=True)
@@ -170,6 +170,9 @@ class DungeonState(BaseState):
                   (36 + coin_icon.get_width() + 6, 108), size=16, color=config.GOLD)
         draw_text(surface, f"Arma: {player.weapon.name} (+{player.weapon.damage})",
                   (36, 132), size=14, color=config.LIGHT_GRAY)
+        if self.game.survival_mode:
+            draw_text(surface, f"MODO SUPERVIVENCIA - Ronda {self.game.rounds_survived + 1}",
+                      (36, 174), size=16, color=config.GOLD, bold=True)
 
     def _draw_log(self, surface):
         log_rect = (20, config.SCREEN_HEIGHT - 130, config.SCREEN_WIDTH - 40, 110)

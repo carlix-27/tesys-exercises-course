@@ -384,8 +384,16 @@ class CombatState(BaseState):
         if self.result == "victory":
             game.log(f"Derrotaste a {self.enemy.name}.")
             if self.enemy.is_boss:
-                game.victory = True
-                game.change_state("game_over")
+                if game.survival_mode:
+                    game.rounds_survived += 1
+                    game.player.rooms_cleared += 1
+                    game.depth += 1
+                    game.next_boss_depth = game.depth + config.BOSS_DEPTH
+                    game.log(f"¡Sobreviviste la ronda {game.rounds_survived}! La mazmorra se reconfigura...")
+                    game.change_state("dungeon")
+                else:
+                    game.victory = True
+                    game.change_state("game_over")
             else:
                 game.depth += 1
                 game.player.rooms_cleared += 1
